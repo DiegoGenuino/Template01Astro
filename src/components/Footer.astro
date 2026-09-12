@@ -1,10 +1,10 @@
 ---
 import { Icon } from 'astro-icon/components';
 import WhatsAppIcon from '@/components/WhatsAppIcon.astro';
+import BrandMark from '@/components/BrandMark.astro';
 import { siteConfig } from '@/config/site';
 
 const { contact, footer, identity } = siteConfig;
-const { logo } = identity;
 const { whatsapp } = footer;
 ---
 
@@ -18,7 +18,7 @@ const { whatsapp } = footer;
   </div>
   <div class="container footer-main">
     <div class="footer-brand">
-      <img class="brand-logo" src={logo.src} width={logo.width} height={logo.height} alt={logo.alt} />
+      <BrandMark />
     </div>
     <p class="spotlight-text">{footer.description}</p>
     <div class="footer-links">

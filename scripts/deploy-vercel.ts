@@ -1,15 +1,14 @@
-import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { constants as fsConstants } from 'node:fs';
-import { access, readFile, readdir } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { dirname, join, relative, resolve, sep } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { siteConfig } from '../src/config/site';
+import { AUTOMATION_KEYS, loadDeployEnvironment, redactSecrets } from './lib/deploy-environment';
+import { assertPushedProductionSource, gitRunner, inspectGitSource } from './lib/deploy-git';
+import { ensureGitProject, gitDeploymentPayload, syncGoogleEnvironment } from './lib/vercel-git';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SCRIPT_DIRECTORY, '..');
-const DIST_DIRECTORY = join(PROJECT_ROOT, 'dist');
 const VERCEL_API = 'https://api.vercel.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GLOBAL_CREDENTIALS_FILE = process.env.FEITO_CREDENTIALS_FILE?.trim()
@@ -18,13 +17,6 @@ const args = new Set(process.argv.slice(2));
 const dryRun = args.has('--dry-run');
 const skipBuild = args.has('--skip-build');
 const skipDomain = args.has('--skip-domain');
-
-interface DeploymentFile {
-  file: string;
-  sha: string;
-  size: number;
-  contents: Buffer;
-}
 
 interface VercelDeployment {
   id: string;
@@ -71,53 +63,24 @@ const sleep = (milliseconds: number) => new Promise((resolvePromise) => {
   setTimeout(resolvePromise, milliseconds);
 });
 
-const loadEnvironmentPath = async (path: string) => {
-  let content: string;
-
-  try {
-    content = await readFile(path, 'utf8');
-  } catch {
-    return;
-  }
-
-  content.split(/\r?\n/).forEach((line) => {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith('#')) return;
-
-    const separatorIndex = trimmed.indexOf('=');
-    if (separatorIndex < 1) return;
-
-    const key = trimmed.slice(0, separatorIndex).trim();
-    let value = trimmed.slice(separatorIndex + 1).trim();
-    if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-      value = value.slice(1, -1);
-    }
-
-    if (!(key in process.env)) process.env[key] = value;
-  });
-};
-
-const loadProjectEnvironmentFile = (filename: string) =>
-  loadEnvironmentPath(join(PROJECT_ROOT, filename));
-
-await loadEnvironmentPath(GLOBAL_CREDENTIALS_FILE);
-await loadProjectEnvironmentFile('.env');
-// Compatibilidade com projetos que já utilizavam um arquivo local de automação.
-await loadProjectEnvironmentFile('.env.automation');
-await loadProjectEnvironmentFile('.env.local');
+// A simulação não lê arquivos de credenciais nem chama os provedores.
+const environment = dryRun ? {} : await loadDeployEnvironment(PROJECT_ROOT, GLOBAL_CREDENTIALS_FILE);
 
 const deploymentConfig = siteConfig.deployment;
 const projectName = deploymentConfig.projectName.trim();
 const subdomain = deploymentConfig.subdomain.trim();
 const baseDomain = deploymentConfig.baseDomain.trim();
 const customDomain = `${subdomain}.${baseDomain}`;
-const vercelToken = process.env.VERCEL_TOKEN?.trim() || '';
-const vercelTeamId = process.env.VERCEL_TEAM_ID?.trim() || '';
-const cloudflareToken = process.env.CLOUDFLARE_API_TOKEN?.trim() || '';
-const cloudflareZoneId = process.env.CLOUDFLARE_ZONE_ID?.trim() || '';
-const cnameTarget = process.env.VERCEL_CNAME_TARGET?.trim() || deploymentConfig.cnameTarget;
+const vercelToken = environment.VERCEL_TOKEN?.trim() || '';
+const vercelTeamId = environment.VERCEL_TEAM_ID?.trim() || '';
+const cloudflareToken = environment.CLOUDFLARE_API_TOKEN?.trim() || '';
+const cloudflareZoneId = environment.CLOUDFLARE_ZONE_ID?.trim() || '';
+const googlePlacesKey = environment.GOOGLE_PLACES_API_KEY?.trim() || '';
+const cnameTarget = environment.VERCEL_CNAME_TARGET?.trim() || deploymentConfig.cnameTarget;
 
 const validateConfiguration = () => {
+  const allowedArgs = new Set(['--', '--dry-run', '--skip-build', '--skip-domain']);
+  if ([...args].some((arg) => !allowedArgs.has(arg))) throw new Error('Opção desconhecida. Use --dry-run, --skip-build ou --skip-domain.');
   const slugPattern = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
   if (!slugPattern.test(projectName)) {
     throw new Error('deployment.projectName deve conter somente letras minúsculas, números e hífens.');
@@ -143,10 +106,10 @@ const validateConfiguration = () => {
 };
 
 const runBuild = async () => {
-  if (skipBuild) {
-    await access(DIST_DIRECTORY, fsConstants.R_OK);
-    return;
-  }
+  if (skipBuild) return;
+
+  const buildEnvironment: NodeJS.ProcessEnv = { ...process.env, GOOGLE_PLACES_API_KEY: googlePlacesKey };
+  for (const key of AUTOMATION_KEYS) delete buildEnvironment[key];
 
   const packageManagerScript = process.env.npm_execpath;
   const executable = packageManagerScript
@@ -158,7 +121,7 @@ const runBuild = async () => {
   await new Promise<void>((resolvePromise, rejectPromise) => {
     const child = spawn(executable, buildArguments, {
       cwd: PROJECT_ROOT,
-      env: process.env,
+      env: buildEnvironment,
       stdio: 'inherit',
       shell: false,
     });
@@ -169,33 +132,6 @@ const runBuild = async () => {
       else rejectPromise(new Error(`O build terminou com código ${code ?? 'desconhecido'}.`));
     });
   });
-};
-
-const collectDeploymentFiles = async () => {
-  const files: DeploymentFile[] = [];
-
-  const visit = async (directory: string) => {
-    const entries = await readdir(directory, { withFileTypes: true });
-    for (const entry of entries) {
-      const absolutePath = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        await visit(absolutePath);
-        continue;
-      }
-      if (!entry.isFile()) continue;
-
-      const contents = await readFile(absolutePath);
-      files.push({
-        file: relative(DIST_DIRECTORY, absolutePath).split(sep).join('/'),
-        sha: createHash('sha1').update(contents).digest('hex'),
-        size: contents.length,
-        contents,
-      });
-    }
-  };
-
-  await visit(DIST_DIRECTORY);
-  return files.sort((left, right) => left.file.localeCompare(right.file));
 };
 
 const withTeamScope = (input: string) => {
@@ -218,6 +154,7 @@ const readErrorMessage = async (response: Response) => {
 const vercelJson = async <T>(path: string, init: RequestInit = {}, allowedStatuses: number[] = []) => {
   const response = await fetch(withTeamScope(path), {
     ...init,
+    signal: AbortSignal.timeout(30_000),
     headers: {
       Authorization: `Bearer ${vercelToken}`,
       'Content-Type': 'application/json',
@@ -236,67 +173,17 @@ const vercelJson = async <T>(path: string, init: RequestInit = {}, allowedStatus
   };
 };
 
-const uploadFiles = async (files: DeploymentFile[]) => {
-  const concurrency = 8;
-  let cursor = 0;
-
-  const worker = async () => {
-    while (cursor < files.length) {
-      const file = files[cursor++];
-      const body = new Uint8Array(file.contents.length);
-      body.set(file.contents);
-      const response = await fetch(withTeamScope('/v2/files'), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${vercelToken}`,
-          'Content-Type': 'application/octet-stream',
-          'Content-Length': String(file.size),
-          'x-vercel-digest': file.sha,
-        },
-        body,
-      });
-
-      if (!response.ok && response.status !== 409) {
-        throw new Error(`Vercel upload (${file.file}): ${await readErrorMessage(response)}`);
-      }
-    }
-  };
-
-  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
-};
-
-const createDeployment = async (files: DeploymentFile[]) => {
-  const url = withTeamScope('/v13/deployments');
-  url.searchParams.set('forceNew', '1');
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${vercelToken}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      name: projectName,
-      target: 'production',
-      files: files.map(({ file, sha, size }) => ({ file, sha, size })),
-      projectSettings: { framework: null },
-    }),
-  });
-
-  if (!response.ok) throw new Error(`Vercel deployment: ${await readErrorMessage(response)}`);
-  return response.json() as Promise<VercelDeployment>;
-};
-
 const waitForDeployment = async (deployment: VercelDeployment) => {
-  for (let attempt = 0; attempt < 90; attempt += 1) {
+  for (let attempt = 0; attempt < 180; attempt += 1) {
     const { data } = await vercelJson<VercelDeployment>(`/v13/deployments/${deployment.id}`);
     const state = data.readyState;
     if (state === 'READY') return data;
     if (state === 'ERROR' || state === 'CANCELED') {
       throw new Error(`O deployment terminou no estado ${state}. Consulte os logs da Vercel.`);
     }
-    await sleep(2_000);
+    await sleep(5_000);
   }
-  throw new Error('Tempo limite excedido aguardando o deployment da Vercel.');
+  throw new Error(`O build ainda não terminou após 15 minutos. Consulte o deployment ${deployment.id} na Vercel antes de tentar novamente.`);
 };
 
 const cloudflareJson = async <T>(path: string, init: RequestInit = {}) => {
@@ -428,24 +315,39 @@ const configureDomain = async () => {
 
 const main = async () => {
   validateConfiguration();
+  const source = await inspectGitSource(PROJECT_ROOT);
+  if (!dryRun && source.dirty) throw new Error('Existem alterações sem commit. Revise, faça commit e push antes de executar o deploy.');
   await runBuild();
-  const files = await collectDeploymentFiles();
-
-  if (!files.length) throw new Error('A pasta dist está vazia.');
 
   if (dryRun) {
-    console.log('Simulação concluída sem chamadas externas.');
+    console.log('Simulação concluída sem consultar GitHub, Vercel, Cloudflare ou Google Places.');
     console.log(`Projeto Vercel: ${projectName}`);
+    console.log(`GitHub: ${source.repository}`);
+    console.log(`Branch: ${source.branch}; commit: ${source.sha.slice(0, 12)}`);
+    console.log(`Raiz Astro no repositório: ${source.rootDirectory || '/'}`);
     console.log(`Domínio: https://${customDomain}`);
-    console.log(`Arquivos prontos para envio: ${files.length}`);
-    console.log(`Escopo: ${vercelTeamId ? `time ${vercelTeamId}` : 'conta pessoal'}`);
-    console.log(`Arquivo global de credenciais: ${GLOBAL_CREDENTIALS_FILE}`);
+    console.log('Build remoto: Astro / pnpm run build / dist. Nenhum upload de arquivos locais.');
+    console.log('Google Places: variável privada de produção; ausência local preserva a variável remota.');
+    if (source.dirty) console.warn('Pendente: faça commit e push das alterações antes do deploy real.');
+    console.log('A simulação não verifica permissões, credenciais ou se o commit está no GitHub.');
     return;
   }
 
-  console.log(`Enviando ${files.length} arquivos para a Vercel...`);
-  await uploadFiles(files);
-  const deployment = await createDeployment(files);
+  // Revalida após o build, que pode gerar arquivos ou ocorrer durante uma edição.
+  const latestSource = await inspectGitSource(PROJECT_ROOT);
+  if (latestSource.sha !== source.sha) throw new Error('O commit mudou durante o build. Execute o deploy novamente.');
+  await assertPushedProductionSource(latestSource, gitRunner(PROJECT_ROOT));
+
+  console.log(`Conectando ${source.repository} ao projeto Vercel ${projectName}...`);
+  const project = await ensureGitProject(vercelJson, projectName, source);
+  const synced = await syncGoogleEnvironment(vercelJson, project.id, googlePlacesKey);
+  console.log(synced
+    ? 'GOOGLE_PLACES_API_KEY salva como variável privada em Production.'
+    : 'Sem chave Google local: variável existente na Vercel preservada; sem chave remota, será usado o fallback manual.');
+  console.log(`Iniciando build remoto do commit ${source.sha.slice(0, 12)}...`);
+  const { data: deployment } = await vercelJson<VercelDeployment>('/v13/deployments?forceNew=1', {
+    method: 'POST', body: JSON.stringify(gitDeploymentPayload(project, source)),
+  });
   const readyDeployment = await waitForDeployment(deployment);
 
   let domainReady = false;
@@ -455,6 +357,7 @@ const main = async () => {
   }
 
   console.log('Deployment concluído.');
+  console.log(`GitHub conectado: novos pushes em ${source.branch} gerarão deploys automáticos.`);
   console.log(`URL Vercel: https://${readyDeployment.url || deployment.url}`);
   if (!skipDomain) {
     console.log(`Domínio: https://${customDomain}${domainReady ? '' : ' (DNS ainda em propagação)'}`);
@@ -463,6 +366,7 @@ const main = async () => {
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
-  console.error(`Falha no deploy: ${message}`);
+  console.error(`Falha no deploy: ${redactSecrets(message, [vercelToken, cloudflareToken, googlePlacesKey])}`);
+  console.error('Se a Vercel não acessar o GitHub, autorize o aplicativo Vercel nesse repositório e confirme a conta/time do token.');
   process.exitCode = 1;
 });

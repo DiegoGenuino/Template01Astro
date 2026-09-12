@@ -10,6 +10,7 @@
     "build": "astro check && astro build",
     "preview": "astro preview",
     "test:reviews": "tsx --test tests/google-reviews.test.ts",
+    "test:deploy": "tsx --test tests/deploy.test.ts",
     "deploy:vercel": "tsx scripts/deploy-vercel.ts"
   },
   "dependencies": {

@@ -2,10 +2,11 @@
 import { siteConfig } from '@/config/site';
 
 const { stats } = siteConfig;
+const itemCount = Math.min(Math.max(stats.items.length, 1), 4);
 ---
 
 <section class="stats" id={stats.id} aria-label={stats.label}>
-  <div class="container stats-grid">
+  <div class="container stats-grid" data-count={itemCount} style={`--stats-count: ${itemCount}`}>
     {stats.items.map(({ value, label }) => (
       <article class="stat" data-reveal>
         <strong class="spotlight-text">{value}</strong>

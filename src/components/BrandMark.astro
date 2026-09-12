@@ -1,0 +1,27 @@
+---
+import { siteConfig } from '@/config/site';
+
+interface Props {
+  class?: string;
+}
+
+const { class: className = '' } = Astro.props;
+const { identity } = siteConfig;
+const logo = identity.logo;
+const fallbackSource = identity.siteName || identity.professionalName;
+const fallbackInitials = fallbackSource
+  .replace(/^(dr\.?|dra\.?)\s+/i, '')
+  .split(/\s+/)
+  .filter(Boolean)
+  .slice(0, 2)
+  .map((part) => part[0]?.toUpperCase())
+  .join('');
+---
+
+<span class={`brand-mark ${className}`.trim()}>
+  {logo?.src ? (
+    <img class="brand-logo" src={logo.src} width={logo.width} height={logo.height} alt={logo.alt} />
+  ) : (
+    <span class="brand-fallback" role="img" aria-label={identity.siteName}>{fallbackInitials || '◆'}</span>
+  )}
+</span>

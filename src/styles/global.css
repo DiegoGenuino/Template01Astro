@@ -243,7 +243,9 @@ svg.cta-arrow-icon {
 .nav-shell {
   display: grid;
   width: min(calc(100% - 48px), 1240px);
-  min-height: var(--header-h);
+  height: var(--header-h);
+  min-height: 0;
+  overflow: hidden;
   grid-template-columns: 1fr auto 1fr;
   align-items: center;
   margin: auto;
@@ -277,13 +279,39 @@ svg.cta-arrow-icon {
 }
 .brand {
   display: flex;
+  min-width: 0;
   flex-direction: column;
   line-height: 1.1;
   text-transform: uppercase;
 }
-.brand-logo {
+.brand-mark {
+  display: inline-flex;
   width: 165px;
+  height: 28px;
+  align-items: center;
+  overflow: hidden;
+}
+.brand-logo {
+  display: block;
+  width: auto;
+  max-width: 165px;
   height: auto;
+  max-height: 24px;
+  object-fit: contain;
+  object-position: left center;
+}
+.brand-fallback {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  color: white;
+  border: 1px solid rgba(255, 255, 255, 0.54);
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
 }
 .brand-name {
   font-size: var(--font-label);
@@ -534,8 +562,10 @@ svg.cta-arrow-icon {
 .stats-grid {
   display: grid;
   min-height: 132px;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(var(--stats-count), minmax(0, 1fr));
   align-items: center;
+  margin-inline: auto;
+  width: min(calc(100% - 48px), calc(var(--stats-count) * 260px));
 }
 .stat {
   position: relative;
@@ -588,8 +618,9 @@ svg.cta-arrow-icon {
 }
 .profile-card img {
   width: 100%;
-  aspect-ratio: 392 / 505;
-  object-fit: cover;
+  height: auto;
+  aspect-ratio: auto;
+  object-fit: contain;
   object-position: center top;
 }
 .profile-card picture {
@@ -1798,7 +1829,8 @@ svg.cta-arrow-icon {
   .nav-shell {
     display: flex;
     width: calc(100% - 24px);
-    min-height: var(--header-h);
+    height: var(--header-h);
+    min-height: 0;
     justify-content: space-between;
     padding-inline: 18px;
   }
@@ -1897,8 +1929,13 @@ svg.cta-arrow-icon {
     display: none;
   }
   .stats-grid {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(min(2, var(--stats-count)), minmax(0, 1fr));
     padding: 16px 0;
+  }
+  .stats-grid[data-count="3"] .stat:last-child {
+    grid-column: 1 / -1;
+    width: 50%;
+    justify-self: center;
   }
   .stat {
     padding: 20px;

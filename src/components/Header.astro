@@ -1,15 +1,15 @@
 ---
 import ArrowUpRightIcon from '@/components/ArrowUpRightIcon.astro';
+import BrandMark from '@/components/BrandMark.astro';
 import { siteConfig } from '@/config/site';
 
-const { contact, header, identity } = siteConfig;
-const { logo } = identity;
+const { contact, header } = siteConfig;
 ---
 
 <header class="site-header" data-header>
   <div class="nav-shell">
     <a class="brand" href={header.brandHref} aria-label={header.brandLabel}>
-      <img class="brand-logo" src={logo.src} width={logo.width} height={logo.height} alt="" />
+      <BrandMark />
     </a>
 
     <nav class="desktop-nav" aria-label={header.primaryNavigationLabel}>

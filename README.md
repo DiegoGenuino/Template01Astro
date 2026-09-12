@@ -138,9 +138,20 @@ O Google determina a seleção e a ordem das avaliações retornadas; a API não
 
 O grid se ajusta automaticamente à quantidade de itens em `practiceSection.items`: até quatro colunas no desktop, duas no tablet e uma no celular. Linhas incompletas são redistribuídas de forma equilibrada, portanto três áreas ocupam três colunas e cinco áreas formam uma linha com três cards e outra com dois. Não é necessário alterar CSS ou componentes.
 
-## Deploy automático: Vercel + Cloudflare
+## Deploy automático: GitHub + Vercel + Cloudflare
 
-O script `pnpm deploy:vercel` executa o build, envia os arquivos estáticos pela API da Vercel, conecta o domínio e cria/atualiza o DNS na Cloudflare. Os dados públicos de cada projeto ficam em `siteConfig.deployment`:
+O comando continua sendo `pnpm deploy:vercel`, mas a publicação agora usa o código do GitHub, não o upload local da pasta `dist`. O script:
+
+1. Detecta o repositório pelo `git remote origin` (HTTPS ou SSH, sem token na URL).
+2. Valida o build local e exige uma cópia sem alterações pendentes, na branch padrão do GitHub, com o último commit já enviado por push.
+3. Cria ou conecta o projeto Vercel ao repositório e configura Astro, instalação `pnpm install --frozen-lockfile`, build `pnpm run build` e saída `dist`.
+4. Se disponível localmente, cadastra apenas `GOOGLE_PLACES_API_KEY` como variável privada de produção na Vercel.
+5. Solicita o build remoto a partir daquele commit específico e aguarda sua conclusão.
+6. Conecta o domínio e cria/atualiza o DNS na Cloudflare, como antes.
+
+Depois da conexão, novos pushes na branch de produção geram deploys pela integração GitHub–Vercel. Não é necessário executar o script em cada atualização. Ele continua útil para publicar inicialmente, sincronizar uma chave Google nova ou reaplicar a configuração do domínio.
+
+Os dados públicos de cada projeto ficam em `siteConfig.deployment`:
 
 ```ts
 deployment: {
@@ -152,6 +163,14 @@ deployment: {
 ```
 
 O endereço resultante será `https://eduardoferreira.feito.website`. Atualize também `seo.siteUrl` para esse endereço antes de publicar.
+
+### Autorizar o GitHub uma vez
+
+Conecte a conta GitHub à Vercel e instale/autorize o [aplicativo Vercel para GitHub](https://vercel.com/docs/git/vercel-for-github). Ele precisa ter acesso ao repositório do cliente, inclusive se for privado. Se você limitar a instalação a repositórios selecionados, libere cada novo repositório; permitir todos inclui novos repositórios, mas concede acesso mais amplo.
+
+Não é necessário adicionar um token GitHub ao template. O Git da máquina deve estar autenticado para clone/push e para a consulta de leitura da branch remota; a Vercel usa sua própria integração para obter o código. Um `VERCEL_TOKEN` sozinho não concede acesso ao GitHub. Ao migrar para um time, confirme também a integração e as permissões desse time.
+
+O script não cria commits, não faz push, não troca branches e não cria repositórios. Esses passos devem ser realizados antes, com autorização do responsável. Caso o app Astro esteja em uma subpasta, a raiz relativa é detectada automaticamente.
 
 As credenciais de publicação são globais e devem ser configuradas uma única vez na máquina que executa os deploys. O script procura automaticamente por:
 
@@ -185,22 +204,44 @@ Em cada novo repositório de cliente, copie apenas `.env.example` para `.env.loc
 Copy-Item .env.example .env.local
 ```
 
-Faça primeiro uma simulação local, que valida a configuração e o build sem chamar APIs externas:
+### Onde fica a chave do Google
+
+- **Desenvolvimento local:** `GOOGLE_PLACES_API_KEY` em `.env.local` do cliente (ignorado pelo Git), ou no ambiente do processo.
+- **Site publicado:** variável `GOOGLE_PLACES_API_KEY` do projeto Vercel, em **Production**, como **Secret/Sensitive**. O comando a cadastra/atualiza automaticamente quando há um valor local.
+- **Somente no painel:** você também pode cadastrá-la diretamente em Settings → Environment Variables na Vercel e deixar o valor local vazio. O script preserva a variável remota, sem buscar seu valor.
+- **Sem chave em nenhum lugar:** as avaliações manuais continuam funcionando. O Google é consultado durante o build, não pelo navegador; novas avaliações aparecem após um novo build.
+- **Previews:** o script não envia a chave para Preview/Development. Se não houver uma variável separada nesses ambientes, eles usam avaliações manuais.
+
+Nunca use prefixo `PUBLIC_`, nunca coloque a chave no `site.ts` e nunca faça commit do `.env.local`. Os tokens Vercel/Cloudflare não são cadastrados no projeto remoto. A chave Google presente por engano no arquivo global de publicação é ignorada. Prioridade para a chave: ambiente do processo → `.env.local` → `.env`; um valor vazio explícito impede sincronização. Se a chave for alterada somente no painel, remova o valor antigo local para não sobrescrevê-la no próximo comando.
+
+Essa configuração usa [variáveis secretas da Vercel](https://vercel.com/docs/environment-variables/sensitive-environment-variables). Guarde a chave original com segurança: ela não precisa ser exposta ao frontend nem lida de volta pelo script.
+
+### Publicar um cliente
+
+Faça primeiro uma simulação local, que valida a configuração e o build sem consultar GitHub, Vercel, Cloudflare ou Google Places. Ela não lê o arquivo global de credenciais e permite alterações pendentes para facilitar a revisão:
 
 ```bash
 pnpm deploy:vercel -- --dry-run
 ```
 
-Depois das chaves configuradas:
+Depois de revisar as informações e configurar as chaves, faça commit e push na branch padrão do repositório. Então publique:
 
 ```bash
 pnpm deploy:vercel
 ```
 
+O deploy real recusa arquivos de ambiente versionados e código diferente do último commit da branch no GitHub. A simulação não confirma permissões, existência do projeto ou DNS. Uma falha de integração GitHub não muda silenciosamente para upload de arquivos locais.
+
 Opções adicionais:
 
-- `--skip-build`: reutiliza uma pasta `dist` já gerada;
+- `--skip-build`: pula apenas a validação local; **a Vercel sempre faz o build remoto do GitHub** e não utiliza sua pasta `dist`;
 - `--skip-domain`: publica na Vercel sem alterar Cloudflare ou domínio personalizado.
+
+### Projetos publicados pelo fluxo antigo
+
+Mantenha o mesmo `deployment.projectName`, conta/time e domínio. Depois de levar estas alterações ao repositório do cliente e fazer push, rode o comando. Ele conecta o projeto existente sem apagar o projeto nem recriar seus domínios. Se o projeto já estiver ligado a outro repositório, o script interrompe antes de alterar esse vínculo; use um nome de projeto exclusivo por cliente. A branch padrão do GitHub e a branch de produção da Vercel precisam estar alinhadas.
+
+Se um passo remoto falhar, alterações já concluídas (como criar o projeto ou salvar a variável) não são desfeitas automaticamente. Corrija a causa e execute novamente. Se apenas o tempo de espera do build expirar, consulte primeiro o deployment indicado na Vercel para evitar builds duplicados.
 
 ### Configuração única do domínio
 
@@ -247,6 +288,7 @@ pnpm dev
 pnpm build
 pnpm preview
 pnpm test:reviews
+pnpm test:deploy
 pnpm deploy:vercel -- --dry-run
 ```
 
@@ -263,6 +305,9 @@ pnpm deploy:vercel -- --dry-run
 - avaliações foram autorizadas pelo cliente;
 - textos alternativos descrevem as imagens relevantes;
 - `pnpm build` termina com zero erros e zero avisos;
+- `pnpm test:reviews` e `pnpm test:deploy` passam;
+- o aplicativo Vercel tem acesso ao repositório GitHub do cliente;
+- configuração e assets estão commitados e enviados à branch padrão, sem credenciais no Git;
 - `dist/llms.txt`, `dist/index.md`, `dist/robots.txt` e `dist/sitemap.xml` contêm o domínio e os dados novos.
 
 ## Evolução do template

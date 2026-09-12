@@ -30,7 +30,7 @@ const aiDiscovery = siteConfig.aiDiscovery;
 const resolvedTitle = title ? seo.titleTemplate.replace('%s', title) : seo.defaultTitle;
 const canonicalUrl = new URL(canonical || Astro.url.pathname, seo.siteUrl).toString();
 const imageUrl = new URL(image, seo.siteUrl).toString();
-const logoUrl = new URL(identity.logo.src, seo.siteUrl).toString();
+const logoUrl = identity.logo?.src ? new URL(identity.logo.src, seo.siteUrl).toString() : undefined;
 const professionalImageUrl = new URL(identity.professionalImage, seo.siteUrl).toString();
 const llmsUrl = new URL(aiDiscovery.llmsPath, seo.siteUrl).toString();
 const markdownUrl = new URL(aiDiscovery.markdownPath, seo.siteUrl).toString();
@@ -53,7 +53,7 @@ const structuredData: Record<string, unknown>[] = [
     '@id': `${seo.siteUrl}/#legal-service`,
     name: identity.legalName,
     url: seo.siteUrl,
-    logo: logoUrl,
+    ...(logoUrl ? { logo: logoUrl } : {}),
     image: imageUrl,
     description,
     areaServed: seo.areaServed,

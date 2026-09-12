@@ -24,7 +24,7 @@ export interface IdentityConfig {
   professionalRole: string;
   professionalDescription: string;
   professionalImage: string;
-  logo: ImageAsset;
+  logo?: ImageAsset;
   registration: string;
 }
 

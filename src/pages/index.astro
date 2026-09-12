@@ -6,7 +6,9 @@ import Stats from '@/components/Stats.astro';
 import About from '@/components/About.astro';
 import VideoSection from '@/components/VideoSection.astro';
 import PracticeGrid from '@/components/PracticeGrid.astro';
+import UrgencySection from '@/components/UrgencySection.astro';
 import Differentials from '@/components/Differentials.astro';
+import ProcessJourney from '@/components/ProcessJourney.astro';
 import Reviews from '@/components/Reviews.astro';
 import FAQ from '@/components/FAQ.astro';
 import LocationSection from '@/components/LocationSection.astro';
@@ -29,7 +31,9 @@ const { enabled: locationSectionEnabled, ...locationSectionProps } = siteConfig.
     <About />
     {videoSectionEnabled && <VideoSection {...videoSectionProps} />}
     <PracticeGrid />
+    <UrgencySection />
     <Differentials />
+    <ProcessJourney />
     {siteConfig.reviewsSection.enabled && <Reviews />}
     <FAQ />
     {locationSectionEnabled && <LocationSection {...locationSectionProps} />}

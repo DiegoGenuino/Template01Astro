@@ -1,0 +1,34 @@
+---
+import ArrowUpRightIcon from '@/components/ArrowUpRightIcon.astro';
+import { siteConfig } from '@/config/site';
+
+const { contact, urgencySection: section } = siteConfig;
+---
+
+<section class="urgency-section" id={section.id}>
+  <div class="container">
+    <header class="urgency-opening" data-reveal>
+      <h2 class="spotlight-text">{section.title}<br /><span>{section.highlightedTitle}</span></h2>
+      <p>{section.description}</p>
+    </header>
+
+    <ul class="urgency-story" aria-label={section.listLabel}>
+      {section.items.map(({ title, description }) => (
+        <li data-reveal>
+          <h3 aria-label={`${title}?`}>
+            <span aria-hidden="true">{title}</span><span class="urgency-punctuation" aria-hidden="true">?</span>
+          </h3>
+          <p>{description}</p>
+        </li>
+      ))}
+    </ul>
+
+    <div class="urgency-conclusion" data-reveal>
+      <p>{section.closingText}</p>
+      <a class="button urgency-cta" href={contact.whatsappUrl} target="_blank" rel="noreferrer">
+        {section.ctaLabel}
+        <ArrowUpRightIcon />
+      </a>
+    </div>
+  </div>
+</section>

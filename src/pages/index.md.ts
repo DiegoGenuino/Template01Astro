@@ -4,7 +4,7 @@ import { siteConfig } from '@/config/site';
 export const prerender = true;
 
 export const GET: APIRoute = () => {
-  const { aiDiscovery, faqSection, identity, locationSection, seo } = siteConfig;
+  const { aiDiscovery, faqSection, identity, locationSection, processSection, seo, urgencySection } = siteConfig;
 
   if (!aiDiscovery.enabled) {
     return new Response('Not found', { status: 404 });
@@ -15,6 +15,12 @@ export const GET: APIRoute = () => {
   const faqs = faqSection.items
     .map(({ question, answer }) => `### ${question}\n\n${answer}`)
     .join('\n\n');
+  const urgencyItems = urgencySection.items
+    .map(({ title, description }) => `- **${title}:** ${description}`)
+    .join('\n');
+  const processSteps = processSection.items
+    .map(({ title, description, detail }, index) => `${index + 1}. **${title}:** ${description} ${detail}`)
+    .join('\n');
 
   const body = `# ${identity.siteName}
 
@@ -41,6 +47,14 @@ ${areas}
 ## Atendimento
 
 O atendimento pode ocorrer presencialmente ou de forma remota, conforme a necessidade do caso. Conversas, documentos e informações são tratados sob sigilo profissional. O primeiro contato é destinado a compreender o contexto, identificar urgências e orientar os próximos passos.
+
+## Quando buscar orientação jurídica
+
+${urgencyItems}
+
+## Como funciona o atendimento
+
+${processSteps}
 
 ## Localização
 

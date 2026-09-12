@@ -86,6 +86,27 @@ export interface PracticeSectionConfig {
   items: Array<{ icon: string; title: string; description: string }>;
 }
 
+export interface UrgencySectionConfig {
+  id: string;
+  title: string;
+  highlightedTitle: string;
+  description: string;
+  closingText: string;
+  ctaLabel: string;
+  listLabel: string;
+  items: Array<{ title: string; description: string }>;
+}
+
+export interface ProcessSectionConfig {
+  id: string;
+  title: string;
+  highlightedTitle: string;
+  description: string;
+  stepsLabel: string;
+  stepLabel: string;
+  items: Array<{ title: string; description: string; detail: string }>;
+}
+
 export interface DifferentialsSectionConfig {
   id: string;
   titlePrefix: string;
@@ -247,7 +268,9 @@ export interface SiteConfig {
   stats: StatsConfig;
   about: AboutConfig;
   practiceSection: PracticeSectionConfig;
+  urgencySection: UrgencySectionConfig;
   differentialsSection: DifferentialsSectionConfig;
+  processSection: ProcessSectionConfig;
   reviewsSection: ReviewsSectionConfig;
   faqSection: FaqSectionConfig;
   footer: FooterConfig;
@@ -370,6 +393,22 @@ export const siteConfig = {
       { icon: 'lucide:credit-card', title: 'Prevenção Corporativa', description: practiceDescription },
     ],
   },
+  urgencySection: {
+    id: 'quando-buscar-ajuda',
+    title: 'O problema raramente chega',
+    highlightedTitle: 'com aviso.',
+    description: 'Mas costuma deixar sinais. Uma intimação, uma diligência ou um bloqueio muda o cenário — e cada movimento seguinte merece ser compreendido antes de acontecer.',
+    closingText: 'Se uma dessas perguntas já faz parte do seu dia, o próximo passo é compreender o cenário com clareza e sigilo.',
+    ctaLabel: 'Conversar com sigilo',
+    listLabel: 'Perguntas para reconhecer quando buscar orientação jurídica',
+    items: [
+      { title: 'Chegou uma intimação', description: 'Antes de responder ou comparecer, entenda o alcance do chamado e como se preparar adequadamente.' },
+      { title: 'Você soube de uma investigação', description: 'A orientação inicial ajuda a identificar a fase do procedimento, os riscos e as medidas possíveis.' },
+      { title: 'Houve busca e apreensão', description: 'Documentos, equipamentos e registros da diligência precisam ser analisados com atenção desde o início.' },
+      { title: 'Bens ou contas foram bloqueados', description: 'É importante compreender a origem da medida, os valores envolvidos e os caminhos para contestá-la.' },
+      { title: 'Existe denúncia, prisão ou prazo para recurso', description: 'Prazos processuais exigem leitura técnica do caso e definição rápida dos próximos atos de defesa.' },
+    ],
+  },
   differentialsSection: {
     id: 'diferenciais',
     titlePrefix: 'Por que a',
@@ -384,6 +423,20 @@ export const siteConfig = {
       { icon: 'lucide:lock-keyhole', title: 'Sigilo profissional absoluto e ética inabalável', description: 'Proteção rigorosa de informações, documentos e decisões em todas as fases do atendimento jurídico.' },
       { icon: 'lucide:book-open-check', title: 'Estratégias alinhadas às jurisprudências recentes', description: 'Atualização contínua para construir teses consistentes e adequadas ao cenário jurídico de cada caso.' },
       { icon: 'lucide:messages-square', title: 'Comunicação clara e acompanhamento contínuo', description: 'Você acompanha o andamento do caso com orientações objetivas, retorno próximo e transparência.' },
+    ],
+  },
+  processSection: {
+    id: 'como-funciona',
+    title: 'Um atendimento que transforma',
+    highlightedTitle: 'incerteza em próximos passos.',
+    description: 'Cada caso exige uma leitura própria. Estas etapas organizam o atendimento sem reduzir a estratégia a uma fórmula pronta.',
+    stepsLabel: 'Etapas do atendimento jurídico',
+    stepLabel: 'Etapa',
+    items: [
+      { title: 'Contato inicial confidencial', description: 'Você apresenta o contexto, as principais dúvidas e qualquer urgência que precise de atenção imediata.', detail: 'O primeiro contato serve para organizar informações e definir o que precisa ser analisado primeiro.' },
+      { title: 'Análise do caso e dos documentos', description: 'A equipe examina fatos, documentos, prazos e a fase processual para construir uma leitura técnica do cenário.', detail: 'Quando necessário, novos documentos e esclarecimentos são solicitados antes da recomendação.' },
+      { title: 'Definição da estratégia jurídica', description: 'As alternativas são explicadas com clareza, incluindo prioridades, próximos atos e possíveis desdobramentos.', detail: 'A estratégia considera as particularidades do caso e pode evoluir conforme surgem novas informações.' },
+      { title: 'Acompanhamento em cada fase', description: 'O cliente recebe orientações e atualizações relevantes durante a condução do trabalho jurídico.', detail: 'Comunicação próxima e linguagem objetiva ajudam a tornar decisões complexas mais compreensíveis.' },
     ],
   },
   reviewsSection: {

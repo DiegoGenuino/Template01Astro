@@ -3,10 +3,12 @@ import test from 'node:test';
 import { resolve } from 'node:path';
 import { redactSecrets, selectDeployEnvironment } from '../scripts/lib/deploy-environment';
 import { assertNoTrackedCredentials, assertPushedProductionSource, inspectGitSource, parseGitHubRemote, type GitSource } from '../scripts/lib/deploy-git';
-import { astroBuildSettings, ensureGitProject, gitDeploymentPayload, syncGoogleEnvironment, type GitProject, type VercelRequest } from '../scripts/lib/vercel-git';
+import { astroBuildSettings, ensureGitProject, GitHubAccessError, gitDeploymentPayload, resolveGitHubConnection, syncGoogleEnvironment, type GitHubConnection, type GitProject, type VercelRequest } from '../scripts/lib/vercel-git';
+import { assertUploadProjectCompatible, uploadDeploymentPayload, type DeploymentFile } from '../scripts/lib/vercel-upload';
 
 const source: GitSource = { repository: 'studio/client', branch: 'main', sha: 'a'.repeat(40), rootDirectory: null, dirty: false };
 const project: GitProject = { id: 'prj_client', name: 'client', link: { type: 'github', org: 'studio', repo: 'client', repoId: 123, productionBranch: 'main' } };
+const connection: GitHubConnection = { provider: 'github', namespace: 'studio', namespaceId: 'icfg_studio', installationId: 456, repositoryId: 123 };
 type Call = { path: string; method: string; body: Record<string, unknown> | undefined };
 
 const mockApi = (respond: (call: Call) => { status: number; data: unknown }) => {
@@ -74,7 +76,7 @@ test('separa tokens globais da chave Google do cliente e prioriza .env.local', (
 
 test('cria projeto já conectado ao GitHub com build Astro', async () => {
   const { api, calls } = mockApi(({ method }) => method === 'GET' ? { status: 404, data: {} } : { status: 200, data: project });
-  assert.deepEqual(await ensureGitProject(api, 'client', source), project);
+  assert.deepEqual(await ensureGitProject(api, 'client', source, connection), project);
   assert.equal(calls[1].path, '/v11/projects');
   assert.deepEqual(calls[1].body?.gitRepository, { type: 'github', repo: 'studio/client' });
   assert.equal(calls[1].body?.framework, 'astro');
@@ -87,7 +89,7 @@ test('conecta projeto antigo sem criar outro e conserva o identificador', async 
     if (method === 'POST' && path.endsWith('/link')) connected = true;
     return { status: 200, data: connected ? project : { ...project, link: null } };
   });
-  assert.equal((await ensureGitProject(api, 'client', source)).id, project.id);
+  assert.equal((await ensureGitProject(api, 'client', source, connection)).id, project.id);
   assert.ok(calls.some(({ path }) => path === '/v9/projects/prj_client/link'));
   assert.ok(!calls.some(({ path }) => path === '/v11/projects'));
   assert.ok(!calls.some(({ method }) => method === 'DELETE'));
@@ -95,25 +97,74 @@ test('conecta projeto antigo sem criar outro e conserva o identificador', async 
 
 test('reexecução não recria vínculo GitHub já existente', async () => {
   const { api, calls } = mockApi(() => ({ status: 200, data: project }));
-  await ensureGitProject(api, 'client', source);
+  await ensureGitProject(api, 'client', source, connection);
   assert.deepEqual(calls.map(({ method }) => method), ['GET', 'PATCH']);
 });
 
 test('interrompe antes de escrever em projeto de outro repositório ou branch', async () => {
   for (const link of [{ ...project.link, repo: 'other' }, { ...project.link, productionBranch: 'develop' }]) {
     const { api, calls } = mockApi(() => ({ status: 200, data: { ...project, link } }));
-    await assert.rejects(ensureGitProject(api, 'client', source));
+    await assert.rejects(ensureGitProject(api, 'client', source, connection));
     assert.deepEqual(calls.map(({ method }) => method), ['GET']);
   }
 });
 
-test('falha de autorização GitHub não gera upload estático alternativo', async () => {
+test('falha ao criar o vínculo Git não altera o projeto dentro do helper', async () => {
   const { api, calls } = mockApi(({ method }) => {
     if (method === 'POST') throw new Error('GitHub integration required');
     return { status: 404, data: {} };
   });
-  await assert.rejects(ensureGitProject(api, 'client', source), /GitHub/);
+  await assert.rejects(ensureGitProject(api, 'client', source, connection), /GitHub/);
   assert.equal(calls.length, 2);
+});
+
+test('seleciona a conta GitHub dona do origin mesmo quando não é a conexão padrão', async () => {
+  const limitedConnection = { ...connection, provider: 'github-limited' as const, namespace: 'friend', namespaceId: 'icfg_friend', repositoryId: 987 };
+  const friendSource = { ...source, repository: 'friend/client' };
+  const { api, calls } = mockApi(({ path }) => {
+    if (path.includes('git-namespaces') && path.includes('provider=github-limited')) {
+      return { status: 200, data: [{ id: limitedConnection.namespaceId, installationId: 789, provider: 'github-limited', slug: 'friend' }] };
+    }
+    if (path.includes('git-namespaces')) {
+      return { status: 200, data: [{ id: 'icfg_studio', provider: 'github', slug: 'studio' }] };
+    }
+    return { status: 200, data: { gitAccount: { namespaceId: limitedConnection.namespaceId, provider: 'github-limited' }, repos: [{ id: 987, name: 'client', namespace: 'friend', slug: 'client' }] } };
+  });
+  assert.deepEqual(await resolveGitHubConnection(api, friendSource), { ...limitedConnection, installationId: 789 });
+  assert.ok(calls.some(({ path }) => path.includes('namespaceId=icfg_friend')));
+});
+
+test('explica qual conta GitHub precisa ser conectada à Vercel', async () => {
+  const { api, calls } = mockApi(() => ({ status: 200, data: [] }));
+  await assert.rejects(
+    resolveGitHubConnection(api, { ...source, repository: 'friend/client' }),
+    (error) => error instanceof GitHubAccessError && error.reason === 'namespace-unavailable',
+  );
+  assert.equal(calls.length, 2);
+});
+
+test('upload direto nunca sobrescreve projeto ligado a outro repositório', () => {
+  assert.doesNotThrow(() => assertUploadProjectCompatible(undefined, source));
+  assert.doesNotThrow(() => assertUploadProjectCompatible(project, source));
+  assert.throws(
+    () => assertUploadProjectCompatible({ ...project, link: { ...project.link!, repo: 'other' } }, source),
+    /nenhum arquivo foi enviado/,
+  );
+});
+
+test('payload de upload envia somente artefatos compilados', () => {
+  const files: DeploymentFile[] = [{ file: 'index.html', sha: 'abc', size: 12, contents: Buffer.from('compiled') }];
+  const payload = uploadDeploymentPayload('client', files);
+  assert.deepEqual(payload.files, [{ file: 'index.html', sha: 'abc', size: 12 }]);
+  assert.equal('contents' in payload.files[0], false);
+  assert.deepEqual(payload.projectSettings, { framework: null });
+});
+
+test('interrompe quando a conta existe mas o repositório não foi autorizado', async () => {
+  const { api } = mockApi(({ path }) => path.includes('git-namespaces')
+    ? { status: 200, data: path.includes('provider=github&') ? [{ id: 'icfg_friend', provider: 'github', slug: 'friend' }] : [] }
+    : { status: 200, data: { gitAccount: { namespaceId: 'icfg_friend', provider: 'github' }, repos: [] } });
+  await assert.rejects(resolveGitHubConnection(api, { ...source, repository: 'friend/client' }), /não tem acesso ao repositório/);
 });
 
 test('chave Google é a única variável enviada, secreta e apenas em produção', async () => {
@@ -147,6 +198,7 @@ test('deployment fixa SHA no GitHub e nunca inclui arquivos locais ou segredos',
   assert.equal('env' in payload, false);
   assert.equal(astroBuildSettings({ ...source, rootDirectory: 'apps/web' }).rootDirectory, 'apps/web');
   assert.throws(() => gitDeploymentPayload({ ...project, link: null }, source));
+  assert.equal(gitDeploymentPayload({ ...project, link: { ...project.link!, type: 'github-limited' } }, source).gitSource.type, 'github-limited');
 });
 
 test('mensagens de erro ocultam tokens e chaves', () => {

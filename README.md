@@ -33,18 +33,18 @@ public/
 A solução recomendada é manter este repositório como **GitHub Template Repository**. Assim, cada cliente recebe um repositório independente e o template original permanece intacto.
 
 1. No GitHub, habilite `Settings > General > Template repository` neste repositório.
-2. Clique em `Use this template` e crie um repositório privado para o cliente.
+2. O desenvolvedor clica em `Use this template` e cria um repositório privado na própria conta.
 3. Clone o novo repositório.
 4. Instale as dependências com `pnpm install`.
 5. Substitua os assets em `public/images`.
 6. Edite apenas `src/config/site.ts` com os dados do cliente.
 7. Execute `pnpm build`.
-8. Faça a revisão final descrita abaixo e publique.
+8. Faça a revisão final descrita abaixo e publique pelo script.
 
 Também é possível criar o projeto pelo GitHub CLI:
 
 ```powershell
-gh repo create nome-do-cliente --private --template USUARIO/REPOSITORIO-TEMPLATE --clone
+gh repo create nome-do-cliente --private --template DiegoGenuino/astro-landing --clone
 Set-Location nome-do-cliente
 pnpm install
 ```
@@ -138,23 +138,24 @@ O Google determina a seleção e a ordem das avaliações retornadas; a API não
 
 O grid se ajusta automaticamente à quantidade de itens em `practiceSection.items`: até quatro colunas no desktop, duas no tablet e uma no celular. Linhas incompletas são redistribuídas de forma equilibrada, portanto três áreas ocupam três colunas e cinco áreas formam uma linha com três cards e outra com dois. Não é necessário alterar CSS ou componentes.
 
-## Deploy automático: GitHub + Vercel + Cloudflare
+## Deploy: GitHub quando disponível, upload direto como fallback
 
-O comando continua sendo `pnpm deploy:vercel`, mas a publicação agora usa o código do GitHub, não o upload local da pasta `dist`. O script:
+O comando continua sendo `pnpm deploy:vercel`. Em `deployment.mode: 'auto'`, o script identifica o proprietário pelo `origin` e escolhe o método compatível com as permissões da conta Vercel:
 
-1. Detecta o repositório pelo `git remote origin` (HTTPS ou SSH, sem token na URL).
+1. Detecta o repositório e seu proprietário pelo `git remote origin` (HTTPS ou SSH, sem token na URL).
 2. Valida o build local e exige uma cópia sem alterações pendentes, na branch padrão do GitHub, com o último commit já enviado por push.
-3. Cria ou conecta o projeto Vercel ao repositório e configura Astro, instalação `pnpm install --frozen-lockfile`, build `pnpm run build` e saída `dist`.
-4. Se disponível localmente, cadastra apenas `GOOGLE_PLACES_API_KEY` como variável privada de produção na Vercel.
-5. Solicita o build remoto a partir daquele commit específico e aguarda sua conclusão.
+3. Se a Vercel tiver uma conexão autorizada com o proprietário, conecta o projeto ao GitHub e solicita o build remoto daquele commit.
+4. Se o repositório pertencer a outra conta pessoal sem conexão disponível na Vercel, informa a limitação e envia diretamente os arquivos compilados de `dist`.
+5. No modo Git, cadastra `GOOGLE_PLACES_API_KEY` como variável privada; no upload direto, a chave é usada somente no build local e não é enviada nos arquivos.
 6. Conecta o domínio e cria/atualiza o DNS na Cloudflare, como antes.
 
-Depois da conexão, novos pushes na branch de produção geram deploys pela integração GitHub–Vercel. Não é necessário executar o script em cada atualização. Ele continua útil para publicar inicialmente, sincronizar uma chave Google nova ou reaplicar a configuração do domínio.
+Quando houver conexão Git, novos pushes na branch de produção geram deploys automáticos. No upload direto, o projeto fica na Vercel indicada pelo token, mas sem vínculo com o repositório; execute o script novamente a cada atualização.
 
 Os dados públicos de cada projeto ficam em `siteConfig.deployment`:
 
 ```ts
 deployment: {
+  mode: 'auto', // tenta Git; sem permissão, envia dist diretamente
   projectName: 'eduardo-ferreira',
   subdomain: 'eduardoferreira',
   baseDomain: 'feito.website',
@@ -164,15 +165,19 @@ deployment: {
 
 O endereço resultante será `https://eduardoferreira.feito.website`. Atualize também `seo.siteUrl` para esse endereço antes de publicar.
 
-### Autorizar o GitHub uma vez
+### Como o modo automático decide
 
 Conecte a conta GitHub à Vercel e instale/autorize o [aplicativo Vercel para GitHub](https://vercel.com/docs/git/vercel-for-github). Ele precisa ter acesso ao repositório do cliente, inclusive se for privado. Se você limitar a instalação a repositórios selecionados, libere cada novo repositório; permitir todos inclui novos repositórios, mas concede acesso mais amplo.
+
+Se o repositório estiver na mesma conta GitHub conectada à Vercel, o script usa a integração Git. Se estiver na conta pessoal de outro desenvolvedor e a Vercel não puder vinculá-lo, `mode: 'auto'` muda explicitamente para upload direto. Essa mudança nunca ocorre por uma falha genérica de rede ou de API: somente quando a consulta confirma ausência de autorização Git.
+
+Use `mode: 'git'` para exigir a integração e falhar sem ela, ou `mode: 'upload'` para sempre publicar `dist` diretamente. O modo recomendado para o template compartilhado é `auto`.
 
 Não é necessário adicionar um token GitHub ao template. O Git da máquina deve estar autenticado para clone/push e para a consulta de leitura da branch remota; a Vercel usa sua própria integração para obter o código. Um `VERCEL_TOKEN` sozinho não concede acesso ao GitHub. Ao migrar para um time, confirme também a integração e as permissões desse time.
 
 O script não cria commits, não faz push, não troca branches e não cria repositórios. Esses passos devem ser realizados antes, com autorização do responsável. Caso o app Astro esteja em uma subpasta, a raiz relativa é detectada automaticamente.
 
-As credenciais de publicação são globais e devem ser configuradas uma única vez na máquina que executa os deploys. O script procura automaticamente por:
+As credenciais de publicação são globais para cada máquina que executa o script. Para publicar na sua Vercel a partir da máquina de outro desenvolvedor, essa máquina precisa de um `VERCEL_TOKEN` da conta de destino e, se também configurar o domínio, das credenciais Cloudflare. O script procura automaticamente por:
 
 ```text
 C:\Users\SEU_USUARIO\Documents\tokens-para-criar-os-sites\credentials.env
@@ -194,6 +199,8 @@ Copy-Item .env.automation.example (Join-Path $feitoDirectory 'credentials.env')
 
 Depois, preencha o arquivo criado. Todos os repositórios gerados pelo template reutilizarão automaticamente essas mesmas credenciais. Não é necessário criar `.env.automation` dentro de cada projeto.
 
+Um token Vercel pessoal pode alcançar outros projetos da conta. Se ele for colocado em outra máquina, use um token separado, com expiração curta, e revogue-o quando a parceria ou a etapa de publicação terminar. O token Cloudflare deve ser limitado somente à zona e à edição de DNS necessárias.
+
 Variáveis configuradas diretamente no sistema ou no CI também são aceitas e têm prioridade sobre o arquivo. Para usar outro local seguro, defina `FEITO_CREDENTIALS_FILE` com o caminho absoluto do arquivo global.
 
 `VERCEL_TEAM_ID` não é uma chave nem é obrigatório. Deixe-o vazio para publicar na conta pessoal e informe esse identificador apenas quando migrar para um time. O destino CNAME também não precisa ser fornecido: o script consulta o valor recomendado pela Vercel e usa a configuração pública do `site.ts` somente como fallback.
@@ -207,7 +214,8 @@ Copy-Item .env.example .env.local
 ### Onde fica a chave do Google
 
 - **Desenvolvimento local:** `GOOGLE_PLACES_API_KEY` em `.env.local` do cliente (ignorado pelo Git), ou no ambiente do processo.
-- **Site publicado:** variável `GOOGLE_PLACES_API_KEY` do projeto Vercel, em **Production**, como **Secret/Sensitive**. O comando a cadastra/atualiza automaticamente quando há um valor local.
+- **Site publicado via Git:** variável `GOOGLE_PLACES_API_KEY` do projeto Vercel, em **Production**, como **Secret/Sensitive**. O comando a cadastra/atualiza automaticamente quando há um valor local.
+- **Site publicado por upload:** a chave é usada durante o build local e não é incluída em `dist`; mantenha o valor no `.env.local` da máquina que publica.
 - **Somente no painel:** você também pode cadastrá-la diretamente em Settings → Environment Variables na Vercel e deixar o valor local vazio. O script preserva a variável remota, sem buscar seu valor.
 - **Sem chave em nenhum lugar:** as avaliações manuais continuam funcionando. O Google é consultado durante o build, não pelo navegador; novas avaliações aparecem após um novo build.
 - **Previews:** o script não envia a chave para Preview/Development. Se não houver uma variável separada nesses ambientes, eles usam avaliações manuais.
@@ -224,22 +232,24 @@ Faça primeiro uma simulação local, que valida a configuração e o build sem 
 pnpm deploy:vercel -- --dry-run
 ```
 
-Depois de revisar as informações e configurar as chaves, faça commit e push na branch padrão do repositório. Então publique:
+Depois de revisar as informações e configurar as chaves, faça commit e push na branch padrão. Na máquina autorizada a publicar, execute:
 
 ```bash
 pnpm deploy:vercel
 ```
 
-O deploy real recusa arquivos de ambiente versionados e código diferente do último commit da branch no GitHub. A simulação não confirma permissões, existência do projeto ou DNS. Uma falha de integração GitHub não muda silenciosamente para upload de arquivos locais.
+Ao terminar, o terminal informa o método usado. `GitHub conectado` significa deploy automático nos próximos pushes. `Upload direto concluído` significa que o comando precisa ser executado novamente nas próximas alterações.
+
+O deploy real recusa arquivos de ambiente versionados e código diferente do último commit da branch no GitHub. A simulação não confirma permissões, existência do projeto ou DNS.
 
 Opções adicionais:
 
-- `--skip-build`: pula apenas a validação local; **a Vercel sempre faz o build remoto do GitHub** e não utiliza sua pasta `dist`;
+- `--skip-build`: não recompila; no modo Git a Vercel ainda faz o build remoto, enquanto no upload direto a pasta `dist` existente precisa estar atualizada;
 - `--skip-domain`: publica na Vercel sem alterar Cloudflare ou domínio personalizado.
 
 ### Projetos publicados pelo fluxo antigo
 
-Mantenha o mesmo `deployment.projectName`, conta/time e domínio. Depois de levar estas alterações ao repositório do cliente e fazer push, rode o comando. Ele conecta o projeto existente sem apagar o projeto nem recriar seus domínios. Se o projeto já estiver ligado a outro repositório, o script interrompe antes de alterar esse vínculo; use um nome de projeto exclusivo por cliente. A branch padrão do GitHub e a branch de produção da Vercel precisam estar alinhadas.
+Mantenha o mesmo `deployment.projectName`, conta/time e domínio. Depois de levar estas alterações ao repositório do cliente e fazer push, rode o comando. Ele reutiliza o projeto sem apagar seus domínios. Se o projeto já estiver ligado a outro repositório, o script interrompe antes de enviar arquivos; use um nome de projeto exclusivo por cliente. A branch padrão do GitHub e a branch de produção da Vercel precisam estar alinhadas quando o modo Git for usado.
 
 Se um passo remoto falhar, alterações já concluídas (como criar o projeto ou salvar a variável) não são desfeitas automaticamente. Corrija a causa e execute novamente. Se apenas o tempo de espera do build expirar, consulte primeiro o deployment indicado na Vercel para evitar builds duplicados.
 

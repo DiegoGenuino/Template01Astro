@@ -2,13 +2,15 @@ import { spawn } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { siteConfig } from '../src/config/site';
+import { siteConfig, type DeploymentMode } from '../src/config/site';
 import { AUTOMATION_KEYS, loadDeployEnvironment, redactSecrets } from './lib/deploy-environment';
 import { assertPushedProductionSource, gitRunner, inspectGitSource } from './lib/deploy-git';
-import { ensureGitProject, gitDeploymentPayload, syncGoogleEnvironment } from './lib/vercel-git';
+import { ensureGitProject, GitHubAccessError, gitDeploymentPayload, resolveGitHubConnection, syncGoogleEnvironment, type GitProject } from './lib/vercel-git';
+import { assertUploadProjectCompatible, collectDeploymentFiles, uploadDeploymentPayload, type DeploymentFile } from './lib/vercel-upload';
 
 const SCRIPT_DIRECTORY = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(SCRIPT_DIRECTORY, '..');
+const DIST_DIRECTORY = join(PROJECT_ROOT, 'dist');
 const VERCEL_API = 'https://api.vercel.com';
 const CLOUDFLARE_API = 'https://api.cloudflare.com/client/v4';
 const GLOBAL_CREDENTIALS_FILE = process.env.FEITO_CREDENTIALS_FILE?.trim()
@@ -67,6 +69,7 @@ const sleep = (milliseconds: number) => new Promise((resolvePromise) => {
 const environment = dryRun ? {} : await loadDeployEnvironment(PROJECT_ROOT, GLOBAL_CREDENTIALS_FILE);
 
 const deploymentConfig = siteConfig.deployment;
+const deploymentMode: DeploymentMode = deploymentConfig.mode;
 const projectName = deploymentConfig.projectName.trim();
 const subdomain = deploymentConfig.subdomain.trim();
 const baseDomain = deploymentConfig.baseDomain.trim();
@@ -77,11 +80,18 @@ const cloudflareToken = environment.CLOUDFLARE_API_TOKEN?.trim() || '';
 const cloudflareZoneId = environment.CLOUDFLARE_ZONE_ID?.trim() || '';
 const googlePlacesKey = environment.GOOGLE_PLACES_API_KEY?.trim() || '';
 const cnameTarget = environment.VERCEL_CNAME_TARGET?.trim() || deploymentConfig.cnameTarget;
+const shouldTryGit = (mode: DeploymentMode) => mode !== 'upload';
+const canFallbackToUpload = (mode: DeploymentMode, error: unknown): error is GitHubAccessError => (
+  mode === 'auto' && error instanceof GitHubAccessError
+);
 
 const validateConfiguration = () => {
   const allowedArgs = new Set(['--', '--dry-run', '--skip-build', '--skip-domain']);
   if ([...args].some((arg) => !allowedArgs.has(arg))) throw new Error('Opção desconhecida. Use --dry-run, --skip-build ou --skip-domain.');
   const slugPattern = /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/;
+  if (!['auto', 'git', 'upload'].includes(deploymentMode)) {
+    throw new Error('deployment.mode deve ser auto, git ou upload.');
+  }
   if (!slugPattern.test(projectName)) {
     throw new Error('deployment.projectName deve conter somente letras minúsculas, números e hífens.');
   }
@@ -171,6 +181,47 @@ const vercelJson = async <T>(path: string, init: RequestInit = {}, allowedStatus
     status: response.status,
     data: text ? JSON.parse(text) as T : {} as T,
   };
+};
+
+const uploadFiles = async (files: DeploymentFile[]) => {
+  const concurrency = 8;
+  let cursor = 0;
+  const worker = async () => {
+    while (cursor < files.length) {
+      const file = files[cursor++];
+      const body = new Uint8Array(file.contents.length);
+      body.set(file.contents);
+      const response = await fetch(withTeamScope('/v2/files'), {
+        method: 'POST',
+        signal: AbortSignal.timeout(60_000),
+        headers: {
+          Authorization: `Bearer ${vercelToken}`,
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(file.size),
+          'x-vercel-digest': file.sha,
+        },
+        body,
+      });
+      if (!response.ok && response.status !== 409) {
+        throw new Error(`Vercel upload (${file.file}): ${await readErrorMessage(response)}`);
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(concurrency, files.length) }, worker));
+};
+
+const deployUploadedBuild = async (source: Awaited<ReturnType<typeof inspectGitSource>>) => {
+  const existing = await vercelJson<GitProject>(`/v9/projects/${encodeURIComponent(projectName)}`, {}, [404]);
+  const project = existing.status === 404 ? undefined : existing.data;
+  assertUploadProjectCompatible(project, source);
+  const files = await collectDeploymentFiles(DIST_DIRECTORY);
+  console.log(`Modo upload direto: enviando ${files.length} arquivos compilados para a Vercel...`);
+  await uploadFiles(files);
+  const { data } = await vercelJson<VercelDeployment>('/v13/deployments?forceNew=1', {
+    method: 'POST',
+    body: JSON.stringify(uploadDeploymentPayload(projectName, files, project)),
+  });
+  return data;
 };
 
 const waitForDeployment = async (deployment: VercelDeployment) => {
@@ -323,10 +374,11 @@ const main = async () => {
     console.log('Simulação concluída sem consultar GitHub, Vercel, Cloudflare ou Google Places.');
     console.log(`Projeto Vercel: ${projectName}`);
     console.log(`GitHub: ${source.repository}`);
+    console.log(`Modo de publicação: ${deploymentMode} (a escolha final depende do acesso Git disponível na Vercel).`);
     console.log(`Branch: ${source.branch}; commit: ${source.sha.slice(0, 12)}`);
     console.log(`Raiz Astro no repositório: ${source.rootDirectory || '/'}`);
     console.log(`Domínio: https://${customDomain}`);
-    console.log('Build remoto: Astro / pnpm run build / dist. Nenhum upload de arquivos locais.');
+    console.log('Git acessível: build remoto pela Vercel. Git inacessível: upload direto da pasta dist.');
     console.log('Google Places: variável privada de produção; ausência local preserva a variável remota.');
     if (source.dirty) console.warn('Pendente: faça commit e push das alterações antes do deploy real.');
     console.log('A simulação não verifica permissões, credenciais ou se o commit está no GitHub.');
@@ -338,16 +390,32 @@ const main = async () => {
   if (latestSource.sha !== source.sha) throw new Error('O commit mudou durante o build. Execute o deploy novamente.');
   await assertPushedProductionSource(latestSource, gitRunner(PROJECT_ROOT));
 
-  console.log(`Conectando ${source.repository} ao projeto Vercel ${projectName}...`);
-  const project = await ensureGitProject(vercelJson, projectName, source);
-  const synced = await syncGoogleEnvironment(vercelJson, project.id, googlePlacesKey);
-  console.log(synced
-    ? 'GOOGLE_PLACES_API_KEY salva como variável privada em Production.'
-    : 'Sem chave Google local: variável existente na Vercel preservada; sem chave remota, será usado o fallback manual.');
-  console.log(`Iniciando build remoto do commit ${source.sha.slice(0, 12)}...`);
-  const { data: deployment } = await vercelJson<VercelDeployment>('/v13/deployments?forceNew=1', {
-    method: 'POST', body: JSON.stringify(gitDeploymentPayload(project, source)),
-  });
+  let deployment: VercelDeployment;
+  let usedGit = false;
+  if (shouldTryGit(deploymentMode)) {
+    try {
+      const gitConnection = await resolveGitHubConnection(vercelJson, source);
+      console.log(`Modo Git: conta autorizada ${gitConnection.namespace} (${gitConnection.provider}).`);
+      console.log(`Conectando ${source.repository} ao projeto Vercel ${projectName}...`);
+      const project = await ensureGitProject(vercelJson, projectName, source, gitConnection);
+      const synced = await syncGoogleEnvironment(vercelJson, project.id, googlePlacesKey);
+      console.log(synced
+        ? 'GOOGLE_PLACES_API_KEY salva como variável privada em Production.'
+        : 'Sem chave Google local: variável existente na Vercel preservada; sem chave remota, será usado o fallback manual.');
+      console.log(`Iniciando build remoto do commit ${source.sha.slice(0, 12)}...`);
+      deployment = (await vercelJson<VercelDeployment>('/v13/deployments?forceNew=1', {
+        method: 'POST', body: JSON.stringify(gitDeploymentPayload(project, source)),
+      })).data;
+      usedGit = true;
+    } catch (error) {
+      if (!canFallbackToUpload(deploymentMode, error)) throw error;
+      console.warn(`GitHub sem vínculo disponível: ${error.message}`);
+      console.warn('Continuando com upload direto porque deployment.mode está como auto.');
+      deployment = await deployUploadedBuild(source);
+    }
+  } else {
+    deployment = await deployUploadedBuild(source);
+  }
   const readyDeployment = await waitForDeployment(deployment);
 
   let domainReady = false;
@@ -357,7 +425,9 @@ const main = async () => {
   }
 
   console.log('Deployment concluído.');
-  console.log(`GitHub conectado: novos pushes em ${source.branch} gerarão deploys automáticos.`);
+  console.log(usedGit
+    ? `GitHub conectado: novos pushes em ${source.branch} gerarão deploys automáticos.`
+    : 'Upload direto concluído: para publicar novas alterações, execute este script novamente.');
   console.log(`URL Vercel: https://${readyDeployment.url || deployment.url}`);
   if (!skipDomain) {
     console.log(`Domínio: https://${customDomain}${domainReady ? '' : ' (DNS ainda em propagação)'}`);
@@ -367,6 +437,6 @@ const main = async () => {
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   console.error(`Falha no deploy: ${redactSecrets(message, [vercelToken, cloudflareToken, googlePlacesKey])}`);
-  console.error('Se a Vercel não acessar o GitHub, autorize o aplicativo Vercel nesse repositório e confirme a conta/time do token.');
+  console.error('Use deployment.mode="auto" para permitir upload direto quando a Vercel não puder vincular o repositório GitHub.');
   process.exitCode = 1;
 });

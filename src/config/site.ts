@@ -253,7 +253,10 @@ export interface SeoConfig {
   }>;
 }
 
+export type DeploymentMode = 'auto' | 'git' | 'upload';
+
 export interface DeploymentConfig {
+  mode: DeploymentMode;
   projectName: string;
   subdomain: string;
   baseDomain: string;
@@ -562,6 +565,8 @@ export const siteConfig = {
     usageNote: 'O conteúdo é institucional e informativo. Não substitui análise jurídica individual e não deve ser interpretado como promessa de resultado.',
   },
   deployment: {
+    // auto conecta o GitHub quando possível e usa upload direto quando o repositório pertence a outra conta.
+    mode: 'auto',
     // O resultado será https://eduardoferreira.feito.website.
     projectName: 'eduardo-ferreira',
     subdomain: 'eduardoferreira',
